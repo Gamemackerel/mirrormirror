@@ -56,6 +56,34 @@
       background-color: rgba(255, 255, 255, 0.6);
       border-radius: 2px;
     }
+    .tap-icon {
+      display: inline-block;
+      width: 30px;
+      height: 30px;
+      position: relative;
+    }
+    .tap-icon::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px;
+      height: 24px;
+      border: 2px solid rgba(255, 255, 255, 0.6);
+      border-radius: 50%;
+    }
+    .tap-icon::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 8px;
+      height: 8px;
+      background-color: rgba(255, 255, 255, 0.8);
+      border-radius: 50%;
+    }
     .pulse {
       animation: pulse 2s infinite;
     }
@@ -64,14 +92,29 @@
       50% { opacity: 1; }
       100% { opacity: 0.6; }
     }
+    #error-message {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(200, 0, 0, 0.7);
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 14px;
+      color: white;
+      opacity: 0;
+      transition: opacity 0.5s;
+      z-index: 100;
+    }
   </style>
 </head>
 <body>
   <div id="sketch-container"></div>
   <div id="info-message" class="pulse">
-    <div class="spacebar-icon"></div>
-    <span id="info-text">spacebar or tap</span>
+    <span id="action-icon" class="spacebar-icon"></span>
+    <span id="info-text">spacebar</span>
   </div>
+  <div id="error-message"></div>
 
   <script>
     let capture;
@@ -99,6 +142,7 @@
     // Info message variables
     let infoMessage;
     let infoText;
+    let actionIcon;
     let infoTimeout;
     let interactionCount = 0; // Count spacebar/tap interactions
 
@@ -106,6 +150,11 @@
     let touchStartTime = 0;
     let touchTimeout;
     let isTouchDevice = false;
+
+    // UI elements
+    let errorMessage;
+    let cameraStarted = false;
+    let cameraStartAttempted = false;
 
     function setup() {
       // Create a full screen canvas
@@ -115,20 +164,17 @@
       // Set initial background
       background(0);
 
-      // Get info message elements
+      // Get UI elements
       infoMessage = select('#info-message');
       infoText = select('#info-text');
+      actionIcon = select('#action-icon');
+      errorMessage = select('#error-message');
 
-      // Detect if we're on a touch device
+      // Detect if we're on a touch device and update UI accordingly
       detectTouchDevice();
 
-      // Start webcam immediately
-      startWebcam();
-
-      // Set a timeout to hide the info message after 10 seconds
-      infoTimeout = setTimeout(() => {
-        infoMessage.style('opacity', '0');
-      }, 10000);
+      // Make sure info message is visible at startup
+      infoMessage.style('opacity', '1');
     }
 
     function detectTouchDevice() {
@@ -137,19 +183,68 @@
                       (navigator.maxTouchPoints > 0) ||
                       (navigator.msMaxTouchPoints > 0));
 
-      // Update info text based on device type
+      // Update info message based on device type
       if (isTouchDevice) {
-        infoText.html('tap screen');
+        infoText.html('tap');
+        actionIcon.removeClass('spacebar-icon');
+        actionIcon.addClass('tap-icon');
       } else {
         infoText.html('spacebar');
       }
     }
 
-    function startWebcam() {
-      // Start the webcam
-      capture = createCapture(VIDEO);
-      capture.hide(); // Hide the default HTML element
+    function startCamera() {
+      // Only attempt to start camera once
+      if (cameraStartAttempted) return;
+      cameraStartAttempted = true;
 
+      // Try to start the webcam with explicit constraints for mobile
+      const constraints = {
+        video: {
+          facingMode: 'user', // Use front camera on mobile
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      };
+
+      try {
+        // Start webcam with mobile-friendly approach
+        capture = createCapture(constraints, function(stream) {
+          // Success callback
+          console.log('Camera successfully started');
+          cameraStarted = true;
+
+          // Initialize the application after camera starts
+          startWebcamProcessing();
+
+          // Set a timeout to hide the info message after 10 seconds
+          infoTimeout = setTimeout(() => {
+            infoMessage.style('opacity', '0');
+          }, 10000);
+
+        });
+        capture.hide(); // Hide the default HTML element
+      } catch (err) {
+        showError("Camera error: " + err.message + ". Please try on HTTPS or allow camera access.");
+        console.error("Camera error:", err);
+
+        // Reset to allow retry
+        cameraStartAttempted = false;
+      }
+    }
+
+    function showError(message) {
+      errorMessage.html(message);
+      errorMessage.style('opacity', '1');
+
+      // Hide error after 5 seconds
+      setTimeout(() => {
+        errorMessage.style('opacity', '0');
+      }, 5000);
+    }
+
+    function startWebcamProcessing() {
       // Wait a bit to ensure capture is initialized
       setTimeout(() => {
         // Adjust cellSize to screen size
@@ -166,26 +261,6 @@
         // Mark as started
         started = true;
       }, 500);
-    }
-
-    function exitExperience() {
-      // Show start screen again
-      startScreen.style('display', 'flex');
-
-      // Hide controls
-      select('#controls').style('display', 'none');
-
-      // Stop video if it exists
-      if (capture) {
-        capture.remove();
-        capture = null;
-      }
-
-      // Reset variables
-      started = false;
-
-      // Clear the canvas
-      background(0);
     }
 
     function initializeGrids() {
@@ -205,9 +280,16 @@
     }
 
     function draw() {
-      if (!started || !capture) return;
+      if (!started || !cameraStarted || !capture || !capture.loadedmetadata) {
+        // Just maintain the black background until everything is ready
+        background(0);
+        return;
+      }
 
       background(0);
+
+      // Check if capture is ready
+      if (capture.width === 0) return;
 
       // Increment frame counter
       frameCount = (frameCount + 1) % webcamUpdateInterval;
@@ -217,8 +299,11 @@
         // Get the pixel data from the camera
         capture.loadPixels();
 
-        // Update grid with new webcam data
-        updateGridWithWebcam();
+        // Make sure pixels exist before proceeding
+        if (capture.pixels && capture.pixels.length > 0) {
+          // Update grid with new webcam data
+          updateGridWithWebcam();
+        }
       }
 
       // Handle CA updates based on pause state
@@ -272,10 +357,28 @@
       }
     }
 
-    // Shared function to toggle CA state
-    function toggleCAState() {
-      if (!started) return;
+    // Check if we're in the initial state before camera starts
+    function isInInitialState() {
+      return !cameraStarted && !cameraStartAttempted;
+    }
 
+    // Shared function to handle all interactions
+    function handleInteraction() {
+      // If camera hasn't started yet, start it
+      if (isInInitialState()) {
+        startCamera();
+        return;
+      }
+
+      // If camera has started but not fully initialized, ignore interaction
+      if (!started || !cameraStarted) return;
+
+      // Otherwise toggle CA state
+      toggleCAState();
+    }
+
+    // Function to toggle CA state
+    function toggleCAState() {
       isPaused = !isPaused;
 
       // Increment interaction count
@@ -314,9 +417,9 @@
 
     // Handle key press events
     function keyPressed() {
-      // Space bar to toggle pause
+      // Space bar to handle interactions
       if (keyCode === 32) { // 32 is the keycode for space
-        toggleCAState();
+        handleInteraction();
       }
 
       // Press 'S' to save screenshot
@@ -329,8 +432,6 @@
 
     // Mobile touch events
     function touchStarted() {
-      if (!started) return false;
-
       // Record start time to prevent duplicate events
       touchStartTime = millis();
 
@@ -341,13 +442,11 @@
     }
 
     function touchEnded() {
-      if (!started) return false;
-
       // Only process touch if it's a quick tap (not a drag)
       if (millis() - touchStartTime < 300) {
         // Add a small delay to prevent double triggering with mouse events
         touchTimeout = setTimeout(() => {
-          toggleCAState();
+          handleInteraction();
         }, 10);
       }
 
@@ -372,36 +471,6 @@
 
             // Also add some energy to make it visually interesting
             energyGrid[y][x] = random(0.3, 0.7);
-          }
-        }
-      }
-
-      // Approach 2: Create a few larger seed points
-      const seedPoints = int(random(3, 8)); // Random number of seed points
-      for (let i = 0; i < seedPoints; i++) {
-        // Random position
-        const seedX = int(random(cols));
-        const seedY = int(random(rows));
-
-        // Random radius
-        const radius = int(random(3, 8));
-
-        // Create a circular seed
-        for (let y = -radius; y <= radius; y++) {
-          for (let x = -radius; x <= radius; x++) {
-            // Check if within circle
-            if (x*x + y*y <= radius*radius) {
-              // Calculate grid position with wrapping
-              const gx = (seedX + x + cols) % cols;
-              const gy = (seedY + y + rows) % rows;
-
-              // Set high state value
-              grid[gy][gx].state = 1.0;
-
-              // Add energy decreasing from center
-              const distFromCenter = sqrt(x*x + y*y) / radius;
-              energyGrid[gy][gx] = max(energyGrid[gy][gx], 1.0 - distFromCenter);
-            }
           }
         }
       }

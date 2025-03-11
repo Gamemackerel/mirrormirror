@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mirror mirror</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #000;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+    }
+    #info-message {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(0, 0, 0, 0.5);
+      padding: 8px 15px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.8);
+      pointer-events: none;
+      transition: opacity 0.5s;
+    }
+    .spacebar-icon {
+      display: inline-block;
+      width: 60px;
+      height: 20px;
+      background-color: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 4px;
+      position: relative;
+    }
+    .spacebar-icon::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 40px;
+      height: 6px;
+      background-color: rgba(255, 255, 255, 0.6);
+      border-radius: 2px;
+    }
+    .pulse {
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.6; }
+      50% { opacity: 1; }
+      100% { opacity: 0.6; }
+    }
+  </style>
+</head>
+<body>
+  <div id="sketch-container"></div>
+  <div id="info-message" class="pulse">
+    <div class="spacebar-icon"></div>
+    <span id="info-text">spacebar or tap</span>
+  </div>
+
+  <script>
+    let capture;
+
+    // Cellular automaton variables
+    let grid = [];
+    let nextGrid = [];
+    let cellSize = 8;
+    let cols, rows;
+
+    // Frame counter for webcam updates
+    let frameCount = 0;
+    let webcamUpdateInterval = 5; // Fixed at 5 frames
+
+    // Variables for tracking changes and creating splashes
+    let lastFrameGrid = []; // Store previous webcam frame for comparison
+    let energyGrid = []; // Store energy/activity level for each cell
+    let splashSensitivity = 15; // Fixed at medium sensitivity
+
+    // CA state variables
+    let isPaused = true; // Start with CA paused
+    let caInfluence = 0.0; // Start with no CA effect visible
+    let started = false;
+
+    // Info message variables
+    let infoMessage;
+    let infoText;
+    let infoTimeout;
+    let interactionCount = 0; // Count spacebar/tap interactions
+
+    // Touch variables
+    let touchStartTime = 0;
+    let touchTimeout;
+    let isTouchDevice = false;
+
+    function setup() {
+      // Create a full screen canvas
+      const canvas = createCanvas(windowWidth, windowHeight);
+      canvas.parent('sketch-container');
+
+      // Set initial background
+      background(0);
+
+      // Get info message elements
+      infoMessage = select('#info-message');
+      infoText = select('#info-text');
+
+      // Detect if we're on a touch device
+      detectTouchDevice();
+
+      // Start webcam immediately
+      startWebcam();
+
+      // Set a timeout to hide the info message after 10 seconds
+      infoTimeout = setTimeout(() => {
+        infoMessage.style('opacity', '0');
+      }, 10000);
+    }
+
+    function detectTouchDevice() {
+      // Check if device supports touch
+      isTouchDevice = (('ontouchstart' in window) ||
+                      (navigator.maxTouchPoints > 0) ||
+                      (navigator.msMaxTouchPoints > 0));
+
+      // Update info text based on device type
+      if (isTouchDevice) {
+        infoText.html('tap screen');
+      } else {
+        infoText.html('spacebar');
+      }
+    }
+
+    function startWebcam() {
+      // Start the webcam
+      capture = createCapture(VIDEO);
+      capture.hide(); // Hide the default HTML element
+
+      // Wait a bit to ensure capture is initialized
+      setTimeout(() => {
+        // Adjust cellSize to screen size
+        cellSize = min(floor(windowWidth / 100), floor(windowHeight / 80));
+        cellSize = max(cellSize, 6); // Ensure minimum cell size
+
+        // Calculate grid dimensions
+        cols = ceil(windowWidth / cellSize);
+        rows = ceil(windowHeight / cellSize);
+
+        // Now initialize the grids
+        initializeGrids();
+
+        // Mark as started
+        started = true;
+      }, 500);
+    }
+
+    function exitExperience() {
+      // Show start screen again
+      startScreen.style('display', 'flex');
+
+      // Hide controls
+      select('#controls').style('display', 'none');
+
+      // Stop video if it exists
+      if (capture) {
+        capture.remove();
+        capture = null;
+      }
+
+      // Reset variables
+      started = false;
+
+      // Clear the canvas
+      background(0);
+    }
+
+    function initializeGrids() {
+      // Initialize CA grids with random values
+      for (let y = 0; y < rows; y++) {
+        grid[y] = [];
+        nextGrid[y] = [];
+        lastFrameGrid[y] = [];
+        energyGrid[y] = [];
+        for (let x = 0; x < cols; x++) {
+          grid[y][x] = { r: 0, g: 0, b: 0, state: random() > 0.5 ? 1 : 0 };
+          nextGrid[y][x] = { r: 0, g: 0, b: 0, state: 0 };
+          lastFrameGrid[y][x] = { r: 0, g: 0, b: 0 };
+          energyGrid[y][x] = 0; // Initial energy level
+        }
+      }
+    }
+
+    function draw() {
+      if (!started || !capture) return;
+
+      background(0);
+
+      // Increment frame counter
+      frameCount = (frameCount + 1) % webcamUpdateInterval;
+
+      // Update webcam data only every few frames
+      if (frameCount === 0) {
+        // Get the pixel data from the camera
+        capture.loadPixels();
+
+        // Update grid with new webcam data
+        updateGridWithWebcam();
+      }
+
+      // Handle CA updates based on pause state
+      if (!isPaused) {
+        // Update the cellular automaton based on current grid
+        updateCellularAutomaton();
+
+        // Reset CA influence when not paused
+        caInfluence = 1.0;
+      } else {
+        // When paused:
+        // 1. Fade out the visual effect
+        caInfluence = max(0, caInfluence - 0.01); // Adjust fade speed here
+
+        // 2. Gradually kill the CA by reducing all cell states
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0; x < cols; x++) {
+            // Decrease the cell state (causing it to die)
+            grid[y][x].state = max(0, grid[y][x].state - 0.01);
+            nextGrid[y][x].state = max(0, nextGrid[y][x].state - 0.01);
+
+            // Also decrease energy
+            energyGrid[y][x] = max(0, energyGrid[y][x] - 0.1);
+          }
+        }
+      }
+
+      // Draw the cellular automaton with current influence level
+      drawCellularAutomaton();
+
+      // Swap grids for next frame (even when paused to keep webcam updates)
+      swapGrids();
+    }
+
+    // Handle window resize - adjust canvas and grid size
+    function windowResized() {
+      // Resize canvas to fill window
+      resizeCanvas(windowWidth, windowHeight);
+
+      if (started) {
+        // Recalculate grid dimensions
+        const newCols = ceil(windowWidth / cellSize);
+        const newRows = ceil(windowHeight / cellSize);
+
+        // Only reinitialize if dimensions changed
+        if (newCols !== cols || newRows !== rows) {
+          cols = newCols;
+          rows = newRows;
+          initializeGrids();
+        }
+      }
+    }
+
+    // Shared function to toggle CA state
+    function toggleCAState() {
+      if (!started) return;
+
+      isPaused = !isPaused;
+
+      // Increment interaction count
+      interactionCount++;
+
+      // Handle info message visibility
+      clearTimeout(infoTimeout);
+
+      if (interactionCount < 2) {
+        // Show info message for a moment on first interaction
+        infoMessage.style('opacity', '1');
+
+        // Set timeout to hide the info message after 3 seconds
+        infoTimeout = setTimeout(() => {
+          infoMessage.style('opacity', '0');
+        }, 3000);
+      } else {
+        // After second interaction, hide message permanently
+        infoMessage.style('opacity', '0');
+
+        // Remove the element from DOM after fade animation completes
+        setTimeout(() => {
+          infoMessage.remove();
+        }, 500);
+      }
+
+      // If unpaused, seed new CA activity
+      if (!isPaused) {
+        // Reset CA influence for immediate effect
+        caInfluence = 1.0;
+
+        // Add random seeds of activity to restart the CA in interesting ways
+        seedNewCAActivity();
+      }
+    }
+
+    // Handle key press events
+    function keyPressed() {
+      // Space bar to toggle pause
+      if (keyCode === 32) { // 32 is the keycode for space
+        toggleCAState();
+      }
+
+      // Press 'S' to save screenshot
+      if (keyCode === 83 && started) { // 83 is the keycode for 'S'
+        saveCanvas('cellular-automaton-snapshot', 'png');
+      }
+
+      return false; // Prevent default behavior
+    }
+
+    // Mobile touch events
+    function touchStarted() {
+      if (!started) return false;
+
+      // Record start time to prevent duplicate events
+      touchStartTime = millis();
+
+      // Clear any existing touch timeout
+      clearTimeout(touchTimeout);
+
+      return false; // Prevent default behavior
+    }
+
+    function touchEnded() {
+      if (!started) return false;
+
+      // Only process touch if it's a quick tap (not a drag)
+      if (millis() - touchStartTime < 300) {
+        // Add a small delay to prevent double triggering with mouse events
+        touchTimeout = setTimeout(() => {
+          toggleCAState();
+        }, 10);
+      }
+
+      return false; // Prevent default behavior
+    }
+
+    // Disable right-click context menu
+    document.addEventListener('contextmenu', event => event.preventDefault());
+
+    // Function to seed new CA activity when unpausing
+    function seedNewCAActivity() {
+      // Approach 1: Seed activity based on webcam brightness
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          // Use webcam brightness to determine seed probability
+          const brightness = grid[y][x].r / 255;
+
+          // Higher brightness = more likely to seed
+          if (random() < brightness * 0.3) {
+            // Set a high state value to start new activity
+            grid[y][x].state = random(0.7, 1.0);
+
+            // Also add some energy to make it visually interesting
+            energyGrid[y][x] = random(0.3, 0.7);
+          }
+        }
+      }
+
+      // Approach 2: Create a few larger seed points
+      const seedPoints = int(random(3, 8)); // Random number of seed points
+      for (let i = 0; i < seedPoints; i++) {
+        // Random position
+        const seedX = int(random(cols));
+        const seedY = int(random(rows));
+
+        // Random radius
+        const radius = int(random(3, 8));
+
+        // Create a circular seed
+        for (let y = -radius; y <= radius; y++) {
+          for (let x = -radius; x <= radius; x++) {
+            // Check if within circle
+            if (x*x + y*y <= radius*radius) {
+              // Calculate grid position with wrapping
+              const gx = (seedX + x + cols) % cols;
+              const gy = (seedY + y + rows) % rows;
+
+              // Set high state value
+              grid[gy][gx].state = 1.0;
+
+              // Add energy decreasing from center
+              const distFromCenter = sqrt(x*x + y*y) / radius;
+              energyGrid[gy][gx] = max(energyGrid[gy][gx], 1.0 - distFromCenter);
+            }
+          }
+        }
+      }
+    }
+
+    function updateGridWithWebcam() {
+      // Update grid with webcam data and create splashes where changes occur
+      if (!capture.pixels || !capture.pixels.length) return;
+
+      // Calculate scaling between video and canvas sizes
+      const videoRatio = min(width / capture.width, height / capture.height);
+      const scaledVideoWidth = capture.width * videoRatio;
+      const scaledVideoHeight = capture.height * videoRatio;
+
+      // Calculate offset to center video in canvas
+      const xOffset = (width - scaledVideoWidth) / 2;
+      const yOffset = (height - scaledVideoHeight) / 2;
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          // Get position in grid
+          const gridX = x * cellSize;
+          const gridY = y * cellSize;
+
+          // Convert to video coordinates (with mirroring)
+          const videoX = map(gridX - xOffset, 0, scaledVideoWidth, 0, capture.width);
+          const videoY = map(gridY - yOffset, 0, scaledVideoHeight, 0, capture.height);
+
+          // Skip if outside video bounds
+          if (videoX < 0 || videoX >= capture.width || videoY < 0 || videoY >= capture.height) {
+            continue;
+          }
+
+          // Mirror the x coordinate (for natural mirror effect)
+          const mirroredX = capture.width - videoX - 1;
+
+          // Get pixel color from webcam (accounting for mirroring)
+          const idx = (floor(videoY) * capture.width + floor(mirroredX)) * 4;
+
+          // Check if valid pixel index
+          if (idx >= 0 && idx < capture.pixels.length - 3) {
+            const r = capture.pixels[idx];
+            const g = capture.pixels[idx + 1];
+            const b = capture.pixels[idx + 2];
+
+            // Convert to grayscale
+            const gray = (r + g + b) / 3;
+
+            // Calculate difference from last frame (for splash detection)
+            const diff = Math.abs(gray - lastFrameGrid[y][x].r);
+
+            // If significant change detected, add energy/splash
+            if (diff > splashSensitivity) { // Threshold for significant change
+              // Add energy based on the magnitude of change
+              energyGrid[y][x] = min(1.0, energyGrid[y][x] + (diff / 255) * 2);
+
+              // Also energize surrounding cells to create a spreading effect
+              const splashRadius = 2;
+              for (let ny = -splashRadius; ny <= splashRadius; ny++) {
+                for (let nx = -splashRadius; nx <= splashRadius; nx++) {
+                  const tx = (x + nx + cols) % cols; // Wrap around boundaries
+                  const ty = (y + ny + rows) % rows;
+
+                  // Distance-based energy distribution (more energy closer to center)
+                  const dist = sqrt(nx * nx + ny * ny);
+                  if (dist <= splashRadius) {
+                    const energy = (1 - dist / splashRadius) * (diff / 255);
+                    energyGrid[ty][tx] = min(1.0, energyGrid[ty][tx] + energy);
+                  }
+                }
+              }
+            }
+
+            // Save current grayscale for next comparison
+            lastFrameGrid[y][x].r = gray;
+
+            // Store in grid
+            grid[y][x].r = gray;
+            grid[y][x].g = gray;
+            grid[y][x].b = gray;
+          }
+        }
+      }
+    }
+
+    function updateCellularAutomaton() {
+      // Process cellular automaton rules
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          // Combine grayscale brightness and energy for rule influence
+          const brightness = grid[y][x].r / 255; // Normalized to 0-1
+
+          // Add energy influence to state calculation
+          const energyInfluence = energyGrid[y][x] * 0.5; // Scale energy influence
+
+          // Calculate the new state using a differentiable rule influenced by pixel brightness and energy
+          let state = computeNextState(x, y, brightness, energyInfluence);
+
+          // Update next grid
+          nextGrid[y][x].r = grid[y][x].r;
+          nextGrid[y][x].g = grid[y][x].g;
+          nextGrid[y][x].b = grid[y][x].b;
+          nextGrid[y][x].state = state;
+
+          // Apply fading effect to energy
+          energyGrid[y][x] = max(0, energyGrid[y][x] - 0.05);
+        }
+      }
+    }
+
+    function computeNextState(x, y, brightness, energyInfluence) {
+      // Count live neighbors (Moore neighborhood)
+      let neighbors = 0;
+      let differentialWeight = 0;
+
+      for (let yy = -1; yy <= 1; yy++) {
+        for (let xx = -1; xx <= 1; xx++) {
+          if (xx === 0 && yy === 0) continue; // Skip self
+
+          const nx = (x + xx + cols) % cols;
+          const ny = (y + yy + rows) % rows;
+
+          if (grid[ny][nx].state > 0.5) {
+            neighbors++;
+          }
+
+          // Add differential weight based on neighbor brightness
+          const neighborBrightness = grid[ny][nx].r / 255;
+          differentialWeight += neighborBrightness * 0.1;
+
+          // Also consider neighbors' energy
+          differentialWeight += energyGrid[ny][nx] * 0.15;
+        }
+      }
+
+      // Current state
+      const currentState = grid[y][x].state;
+
+      // Modified Conway's Game of Life rules (with differentiable component)
+      // - With pixel brightness affecting the birth/survival thresholds
+      // - And energy creating "splashes" of activity
+      const birthThreshold = 3 + brightness * 0.5 - differentialWeight - energyInfluence;
+      const surviveMin = 2 + brightness * 0.3 - differentialWeight - energyInfluence * 0.5;
+      const surviveMax = 3 + brightness * 0.2 + energyInfluence * 0.3;
+
+      // Smooth transition between states (makes it differentiable)
+      if (currentState < 0.5) {
+        // Currently "dead"
+        if (neighbors > birthThreshold && neighbors < 4) {
+          // Add energy boost for birth events
+          return Math.min(currentState + 0.2 + brightness * 0.1 + energyInfluence * 0.3, 1.0);
+        } else {
+          return Math.max(currentState - 0.1, 0.0);
+        }
+      } else {
+        // Currently "alive"
+        if (neighbors >= surviveMin && neighbors <= surviveMax) {
+          return Math.min(currentState + 0.05 + brightness * 0.05 + energyInfluence * 0.1, 1.0);
+        } else {
+          return Math.max(currentState - 0.15, 0.0);
+        }
+      }
+    }
+
+    function drawCellularAutomaton() {
+      // Draw the cellular automaton
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const cell = grid[y][x];
+          const cellX = x * cellSize;
+          const cellY = y * cellSize;
+
+          // Get the base grayscale value from webcam
+          let grayValue = cell.r;
+
+          // Only apply CA effect based on the current influence factor
+          if (caInfluence > 0) {
+            // Mix the cell's grayscale value with the state and energy
+            const stateFactor = cell.state * 1.5 * caInfluence; // Apply fade to state effect
+            const energyFactor = energyGrid[y][x] * caInfluence; // Apply fade to energy effect
+
+            // Blend between the grayscale value and a highlighted version based on cell state
+            grayValue = cell.r * (1 + stateFactor * 0.5);
+
+            // Add energy contrast effect (increase contrast in areas with energy)
+            if (energyFactor > 0) {
+              // Apply contrast enhancement
+              // Map original 0-255 range to -1 to 1 for manipulation
+              const normalizedGray = (grayValue / 255) * 2 - 1;
+
+              // Apply contrast enhancement using a sigmoid-like function
+              // Stronger energy = more contrast
+              const contrastFactor = 1 + energyFactor * 2.5;
+              const enhancedGray = Math.tanh(normalizedGray * contrastFactor);
+
+              // Map back to 0-255 range
+              grayValue = ((enhancedGray + 1) / 2) * 255;
+
+              fill(grayValue);
+            } else {
+              fill(grayValue);
+            }
+          } else {
+            // When fully faded, just show the grayscale webcam image
+            fill(grayValue);
+          }
+
+          noStroke();
+          rect(cellX, cellY, cellSize, cellSize);
+        }
+      }
+    }
+
+    function swapGrids() {
+      // Swap current and next grids
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          grid[y][x].state = nextGrid[y][x].state;
+        }
+      }
+    }
+
+    function saveSnapshot() {
+      if (started) {
+        saveCanvas('cellular-automaton-snapshot', 'png');
+      }
+    }
+  </script>
+</body>
+</html>
